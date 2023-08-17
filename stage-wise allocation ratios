@@ -1,0 +1,157 @@
+################################################################################
+# File:          Multi-Arm Multi-stage trial.R                                 #
+# Author(s):     Ruqayya Azher (r.a.o.azher2@newcastle.ac.uk),                 #
+#                Michael Grayling (michael.grayling@newcastle.ac.uk)           #
+# Last modified: 2023/08/17                                                    #
+# Description: Code to investigate several stage-wise allocation ratios in MAMS#
+#              trial                                                           #
+################################################################################
+
+##### INSTALL / LOAD REQUIRED PACKAGES #########################################
+library(mvtnorm)
+
+##### The information for the treatment effects at each stage ##################
+information            <- function(J, K, n0, r, sig) {
+  I                    <- numeric(J*K) # (k1ji, k1j2, k2j1, k2j2,...)
+  for (k in 1:K) {
+    for (j in 1:J) {
+      n0j              <- n0[j]
+      nkj              <- n0[j]*r[j]
+      I[(k - 1)*J + j] <- 1/(sig^2/n0j + sig^2/nkj)
+    }
+  }
+  I
+}
+information(J = 2, K = 3, n0 = c(22, 44), r = c(1, 1), sig = 1)
+
+##### The covariance matrix for the treatment effects at each stage ############
+covariance             <- function(J, K, r, n0) {
+  n0_tilde                           <- cumsum(n0)
+  nk                                 <- r*n0
+  nk_tilde                           <- cumsum(nk)
+  r_tilde                            <- nk_tilde/n0_tilde
+  # [k1,j1] [k1,j2] [k2,j1] [k2,j2]
+  CovZ                               <- matrix(0, J*K, J*K)
+  for (j1 in 1:J) {
+    for (k1 in 1:K) {
+      for (j2 in j1:J) {
+        for (k2 in 1:K) {
+          row_index                  <- (k1 - 1)*J + j1
+          col_index                  <- (k2 - 1)*J + j2
+          CovZ[row_index, col_index] <- CovZ[col_index, row_index] <-
+            (n0_tilde[j1]*r_tilde[j1]*r_tilde[j2]/
+               (n0_tilde[j2]*(r_tilde[j1] + 1)*(r_tilde[j2] + 1)))^0.5*
+            (1 + (k1 == k2)/r_tilde[j2])
+        }
+      }
+    }
+  }
+  CovZ
+}
+covariance(J = 2, K = 3, r = c(1, 1), n0 = c(22, 22))
+
+##### Marginal power ###########################################################
+marg_power             <- function(J, K, f, e, delta, n0, r, sig) {
+  CovZ          <- covariance(J, K, r, n0)
+  I             <- information(J, K, n0, r, sig)
+  marginal      <- numeric(K)
+  prob          <- numeric(J)
+  for (k in 1:K) {
+# I want to define the covariance for arm k across stages from the complete
+# covariance matrix above
+    CovZk       <- CovZ[((k - 1)*J + 1):(J*k), ((k - 1)*J + 1):(J*k)]
+    for (j in 1:J) {
+      if (j == 1) {
+        prob[1] <- pnorm(e[1], mean = delta*sqrt(I[1]), lower.tail = FALSE)
+      } else {
+        prob[j] <- pmvnorm(lower = c(f[1:(j - 1)], e[j]),
+                           upper = c(e[1:(j - 1)], Inf),
+                           mean  = delta*sqrt(I[1:j]),
+                           sigma = CovZk[1:j, 1:j])[1]
+      }
+    }
+    marginal[k] <- sum(prob)
+  }
+  marginal
+}
+marg_power(J = 2, K = 3, f = c(0, 2.086), e = c(2.782, 2.086),
+          delta = 0.545, n0 = c(28.9, 57.8), r = c(0.75, 0.75), sig = 1)
+
+##### Disjunctive power ########################################################
+
+# The disjunctive power is (1 - probability not reject any null). So, first
+# create a function that computes the probability of a particular scenario in
+# which no hypothesis is rejected
+prob_of_not_reject_any <- function(X, J, K, f, e, delta, n0, r, sig) {
+  CovZ                                              <- covariance(J, K, r, n0)
+  I                                                 <- information(J, K, n0, r,
+                                                                   sig)
+  lower                                             <- rep(-Inf, J*K)
+  upper                                             <- rep(Inf, J*K)
+  for (k in 1:K) {
+    # X represents the stage that treatment k was last present in the trial
+    if (X[k] == 1) {
+      lower[(k - 1)*J + 1]                          <- -Inf
+      upper[(k - 1)*J + 1]                          <- f[1]
+    } else {
+      lower[((k - 1)*J + 1):((k - 1)*J + X[k] - 1)] <- f[1:(X[k] - 1)]
+      upper[((k - 1)*J + 1):((k - 1)*J + X[k] - 1)] <- e[1:(X[k] - 1)]
+      upper[((k - 1)*J + X[k])]                     <- f[X[k]]
+    }
+  }
+  pmvnorm(lower = lower, upper = upper, mean = delta*sqrt(I), sigma = CovZ)[1]
+}
+
+# Then to compute the disjunctive power, we apply the above function to all
+# possible combinations of outcomes in which no hypothesis is rejected
+dis_power              <- function(J, K, f, e, delta, n0, r, sig) {
+  # All possible combinations of when arms were found to be futile
+  all_X      <- as.matrix(expand.grid(rep(list(1:J), K)))
+  probs      <- nrow(all_X)
+  for (i in 1:nrow(all_X)) {
+    probs[i] <- prob_of_not_reject_any(all_X[i, ], J, K, f, e, delta, n0, r,
+                                       sig)
+  }
+  1 - sum(probs)
+}
+dis_power(J = 2, K = 3, f = c(0, 2.086), e = c(2.782, 2.086), delta = 0.545,
+          n0 = c(53.7, 107.4), r = c(0.25, 0.25), sig = 1)
+
+##### Conjunctive power ########################################################
+
+# Function that computes the probability of a particular scenario in which all
+# hypotheses are rejected
+prob_of_rej_all        <- function(X, J, K, f, e, delta, n0, r, sig) {
+  CovZ                                              <- covariance(J, K, r, n0)
+  I                                                 <- information(J, K, n0, r,
+                                                                   sig)
+  lower                                             <- rep(-Inf, J*K)
+  upper                                             <- rep(Inf, J*K)
+  for (k in 1:K) {
+    if (X[k] == 1) {
+      lower[((k - 1)*J + 1)]                        <- e[1]
+      upper[((k - 1)*J + 1)]                        <- Inf
+    } else {
+      lower[((k - 1)*J + 1):((k - 1)*J + X[k] - 1)] <- f[1:(X[k] - 1)]
+      upper[((k - 1)*J + 1):((k - 1)*J + X[k] - 1)] <- e[1:(X[k] - 1)]
+      lower[((k - 1)*J + X[k])]                     <- e[X[k]]
+    }
+  }
+  pmvnorm(lower = lower, upper = upper, mean = delta*sqrt(I), sigma = CovZ)[1]
+}
+
+# Then to compute the conjunctive power, we apply the above function to all
+# possible combinations of outcomes in which all hypotheses are rejected
+conj_power             <- function(J, K, f, e, delta, n0, r, sig) {
+  # All possible combinations of when arms were found to be efficacious
+  all_X      <- as.matrix(expand.grid(rep(list(1:J), K)))
+  probs      <- nrow(all_X)
+  for (i in 1:nrow(all_X)) {
+    probs[i] <- prob_of_rej_all(all_X[i, ], J, K, f, e, delta, n0, r, sig)
+
+  }
+  sum(probs)
+}
+conj_power(J = 2, K = 3, f = c(0, 2.086), e = c(2.782, 2.086), delta = 0.545,
+           n0 = c(47, 94), r = c(0.5, 0.5), sig = 1)
+
