@@ -9,6 +9,7 @@
 
 ##### INSTALL / LOAD REQUIRED PACKAGES #########################################
 library(mvtnorm)
+installed.packages("MAMS")
 
 ##### The information for the treatment effects at each stage ##################
 information            <- function(J, K, n0, r, sig) {
@@ -155,3 +156,10 @@ conj_power             <- function(J, K, f, e, delta, n0, r, sig) {
 conj_power(J = 2, K = 3, f = c(0, 2.086), e = c(2.782, 2.086), delta = 0.545,
            n0 = c(47, 94), r = c(0.5, 0.5), sig = 1)
 
+# To calculate the expected sample size (ESS), we use MAMS package to define the 
+# ESS after dropping treatment arm(s) at each stage 
+
+MAMS::mams.sim(nsim=1e5, nMat = matrix(c(31,  82, 113, rep(c(31, 57, 88), 4)),
+               nrow = 3, ncol = 5), u=c(3.799, 2.686, 2.194),
+               l=c(0.000, 0.000, 2.294), pv=NULL, deltav=rep(0, 4), 
+               sd=1, ptest=1, parallel=TRUE)
